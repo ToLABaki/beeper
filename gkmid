@@ -1,0 +1,146 @@
+#!/usr/bin/env php
+<?php
+  //default tempo
+  $tempo = 60;
+  $monada = 4;
+  //beep executable
+  $beep = "beep";
+
+  //constant data
+  $frequencies_table = array(
+    "C" => 261.6,
+    "C#" => 277.2,
+    "D" => 293.7,
+    "D#" => 311.1,
+    "E" => 329.6,
+    "F" => 349.2,
+    "F#" => 370.0,
+    "G" => 392.0,
+    "G#" => 415.3,
+    "A" => 440.0,
+    "A#" => 466.2,
+    "B" => 493.9
+  );
+  $note_line_pattern = "/^(?<notes>([a-gA-G]{1}\-?\d{1}#?,?)+)\s+(?<duration>\d+)(?<dotted>\*{0,2})$/";
+  $note_pattern = "/^(?<note>[a-gA-G]{1})(?<octave>\-?\d{1})(?<sharp>#?)$/";
+  $tempo_pattern = "/^%\s?(?<tempo>\d+)\/{1}(?<monada>\d+)$/";
+
+  //parse options
+  $cmdline_opts = getopt("t:f:",array("transpose:", "format:"));
+
+  if (isset($cmdline_opts["t"])) {
+    $transpose = $cmdline_opts["t"];
+  } else if (isset($cmdline_opts["transpose"])) {
+    $transpose = $cmdline_opts["transpose"];
+  } else {
+    $transpose = 0;
+  }
+
+  if (isset($cmdline_opts["f"])) {
+    $format = $cmdline_opts["f"];
+  } else if (isset($cmdline_opts["format"])) {
+    $format = $cmdline_opts["format"];
+  } else {
+    $format = "beep-stdin";
+  }
+
+  if (count($argv) > 1) {
+    $file = $argv[count($argv)-1];
+  } else {
+    die("No input files\n");
+  }
+
+  //code
+  $content = file_get_contents($file);
+  $notes = explode("\n", $content);
+
+  foreach($notes as $line => $i) {
+    if (empty($i)) {
+      continue;
+    }
+
+    if ($i[0] == "%")
+    {
+      if (!preg_match($tempo_pattern, $i, $matches)) {
+        error_log("Invalid syntax on tempo definition at $line");
+        continue;
+      }
+      $tempo = $matches["tempo"];
+      $monada = $matches["monada"];
+    }
+    else if ($i[0] != '#')
+    {
+      if (!preg_match($note_line_pattern, $i, $matches)) {
+        error_log("Invalid syntax on note definition at $line");
+        continue;
+      }
+
+      //frequencies calculation
+      $freqs = array();
+      $notes = explode(",", $matches["notes"]);
+      foreach($notes as $j) {
+        if (!empty($j)) {
+          preg_match($note_pattern, $j, $note_parts);
+          $note = $note_parts["note"] . $note_parts["sharp"];
+          $freqs[] = $frequencies_table[$note] * pow(2, $note_parts["octave"] + $transpose);
+        }
+      }
+
+      //duration calculation
+      $duration = ($monada * 60) / ($tempo * $matches["duration"]);
+      if (strlen($matches["dotted"] == 1)) {
+        $duration *= 1.5;
+      } else if (strlen($matches["dotted"] == 2)) {
+        $duration *= 1.75;
+      }
+      $duration = ceil($duration * 1000);
+
+      //multiplexing
+      if (sizeof($freqs) > 1) {
+//         $slots = $duration / 15;
+//         while ($slots >= 1) {
+//           $output_notes[] = array($freqs[$slots % count($freqs)], 15);
+//           $slots--;
+//         }
+        $slot_time = 20;
+        $slots = $duration / $slot_time;
+        $note_index = 0;
+        $note_dir = 1;
+        for(;$slots >= 1; $slots--) {
+          $output_notes[] = array($freqs[$note_index], $slot_time);
+          if ($note_dir > 0 && $note_index >= (count($freqs) - 1)) {
+            $note_dir = -1;
+          } else if ($note_dir < 0 && $note_index == 0) {
+            $note_dir = 1;
+          }
+
+          $note_index += $note_dir;
+        }
+      } else {
+        $output_notes[] = array($freqs[0], $duration);
+      }
+    }
+  }
+
+  if (!isset($output_notes)) {
+    die("Input file does not contain any notes\n");
+  }
+
+  switch($format) {
+  case "c-array":
+    echo "typedef struct _Note {\n\tfloat freq;\n\tunsigned short duration;\n} Note;\n\n";
+    echo "Note notes[] = {\n";
+    foreach($output_notes as $note) {
+      echo "\t{" . $note[0] . ", " . $note[1] . "},\n";
+    }
+    echo "};\n";
+    break;
+  case "beep-stdin":
+  default:
+    foreach($output_notes as $note) {
+      echo "$note[0] $note[1]\n";
+    }
+    break;
+  }
+
+?>
